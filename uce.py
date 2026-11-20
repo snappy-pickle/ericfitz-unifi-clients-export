@@ -12,14 +12,16 @@
 UniFi Network Client Export Script (API Key Authentication)
 
 Exports currently connected clients and all UniFi devices from a UniFi Network
-controller to a CSV file using a read-only API key.
+controller to a CSV file using a read-only API key. With --include-offline,
+clients from the controller's history that are not connected are included too.
 
 Compatible with UniFi Network Application v9.5.21+.
 
 Configuration:
   Copy example.env to .env and configure your UniFi controller settings.
 
-Run with: `uv run uce.py`
+Run with: `uv run uce.py` (add `--include-offline` for offline clients;
+see `--help` for all options)
 
 Automatically installs dependencies via PEP 723 metadata when using `uv`.
 
@@ -27,6 +29,7 @@ Author: Assistant
 Date: November 15, 2025
 """
 
+import argparse
 import os
 import sys
 import requests
@@ -66,7 +69,34 @@ def get_config():
     return controller_url, api_key, site_id, verify_ssl
 
 
+def parse_args():
+    """Parse command-line options."""
+    parser = argparse.ArgumentParser(
+        description="Export UniFi clients and devices to CSV files."
+    )
+    parser.add_argument(
+        "--include-offline",
+        action="store_true",
+        help="also export clients that are not currently connected, "
+        "from the controller's client history",
+    )
+    parser.add_argument(
+        "--history-hours",
+        type=int,
+        default=8760,
+        metavar="HOURS",
+        help="with --include-offline, how far back to include offline "
+        "clients (default: 8760 = 1 year)",
+    )
+    args = parser.parse_args()
+    if args.history_hours <= 0:
+        parser.error("--history-hours must be a positive integer")
+    return args
+
+
 def main() -> None:
+    args = parse_args()
+
     # Load configuration
     CONTROLLER_URL, API_KEY, SITE_ID, VERIFY_SSL = get_config()
     session = requests.Session()
@@ -142,21 +172,76 @@ def main() -> None:
     except Exception as e:
         print(f"Failed: {e}")
         return
+    print(f"Found {len(clients_data)} connected client(s)")
+
+    # stat/sta only returns connected clients; the client history also
+    # includes clients that are offline.
+    history_data = []
+    if args.include_offline:
+        history_paths = [
+            (
+                "stat/alluser",
+                {"type": "all", "conn": "all", "within": args.history_hours},
+            ),
+            ("rest/user", None),
+        ]
+        for path, params in history_paths:
+            history_url = f"{CONTROLLER_URL}/proxy/network/api/s/{SITE_ID}/{path}"
+            print(f"\nFetching client history: {history_url}")
+            try:
+                resp = session.get(
+                    history_url, params=params, verify=VERIFY_SSL, timeout=30
+                )
+                if resp.status_code == 404:
+                    print("   → 404: Trying fallback...")
+                    history_url = f"{CONTROLLER_URL}/api/s/{SITE_ID}/{path}"
+                    resp = session.get(
+                        history_url, params=params, verify=VERIFY_SSL, timeout=30
+                    )
+                resp.raise_for_status()
+                history_data = resp.json().get("data", [])
+                print(f"Found {len(history_data)} known client(s)")
+                break
+            except Exception as e:
+                print(f"Warning: Could not fetch client history: {e}")
+        if not history_data:
+            print("   → Only currently connected clients will be exported")
+
+    # Merge: connected clients (with live details) take precedence over
+    # history entries for the same MAC address
+    seen_macs = set()
+    merged_clients = []
+    for c in clients_data:
+        mac = c.get("mac", "").upper()
+        if mac:
+            seen_macs.add(mac)
+        merged_clients.append((c, True))
+    for c in history_data:
+        mac = c.get("mac", "").upper()
+        if not mac or mac in seen_macs:
+            continue
+        seen_macs.add(mac)  # also de-duplicates history entries
+        merged_clients.append((c, False))
 
     # Process client data
     records = []
-    for c in clients_data:
-        conn = "Wireless" if c.get("ap_mac") else "Wired"
+    for c, online in merged_clients:
+        if online:
+            conn = "Wireless" if c.get("ap_mac") else "Wired"
+        else:
+            # Offline clients have no ap_mac; use the last known link type
+            conn = "Wired" if c.get("is_wired") else "Wireless"
         last = (
             datetime.fromtimestamp(c.get("last_seen", 0))
             if c.get("last_seen")
             else None
         )
 
-        # Extract switch and port info for wired clients
+        # Extract switch and port info for connected wired clients; the
+        # controller does not track these for offline clients
         switch_name = ""
         switch_port = ""
-        if conn == "Wired":
+        if online and conn == "Wired":
             sw_mac = c.get("sw_mac", "").upper()
             if sw_mac:
                 switch_name = devices_map.get(sw_mac, sw_mac)
@@ -169,14 +254,16 @@ def main() -> None:
                 "Type": "Client",
                 "Name": c.get("name") or c.get("hostname") or "Unknown",
                 "MAC Address": c.get("mac", "").upper(),
-                "IP Address": c.get("ip", ""),
+                "IP Address": c.get("ip")
+                or c.get("last_ip")
+                or c.get("fixed_ip")
+                or "",
                 "Model": "",
                 "Connection Type": conn,
                 "Switch": switch_name,
                 "Port": switch_port,
                 "Last Seen": last.strftime("%Y-%m-%d %H:%M:%S") if last else "",
-                # stat/sta only returns currently connected clients
-                "Status": "Online",
+                "Status": "Online" if online else "Offline",
             }
         )
 

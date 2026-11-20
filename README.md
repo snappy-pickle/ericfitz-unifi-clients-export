@@ -4,7 +4,7 @@ A Python script to export all client devices and UniFi infrastructure from a Uni
 
 ## Features
 
-- **Comprehensive Client Export**: Exports all currently connected clients with connection details
+- **Comprehensive Client Export**: Exports all currently connected clients with connection details, and optionally offline clients from the controller's history
 - **UniFi Device Inventory**: Includes all UniFi infrastructure devices (switches, access points, gateways)
 - **Switch Port Mapping**: Generates detailed port information for each switch, including:
   - Connected clients and devices
@@ -106,6 +106,29 @@ uv run uce.py
 
 Dependencies are automatically installed and managed by uv using PEP 723 inline metadata.
 
+### Including offline clients
+
+By default, only clients that are currently connected are exported. To also
+export clients the controller has seen before but that are offline now, add
+`--include-offline`:
+
+```bash
+uv run uce.py --include-offline
+```
+
+Offline clients have Status `Offline` and keep their last known IP address and
+Last Seen time. Their Switch and Port columns are empty, because the controller
+only tracks those for connected clients.
+
+By default, offline clients seen within the last year (8760 hours) are
+included. Use `--history-hours` to change that:
+
+```bash
+uv run uce.py --include-offline --history-hours 720   # last 30 days
+```
+
+The same options work when running with `python3 uce.py`.
+
 ### With python executable
 
 Make sure your virtual environment is activated, then run:
@@ -128,7 +151,7 @@ The script will generate the following files:
 
 1. **`unifi_clients.csv`** - Master inventory file containing:
 
-   - All currently connected client devices (wireless and wired)
+   - All currently connected client devices (wireless and wired), plus offline clients with `--include-offline`
    - All UniFi infrastructure devices (switches, APs, gateways)
    - Columns: Type, Name, MAC Address, IP Address, Model, Connection Type, Switch, Port, Last Seen, Status
 
