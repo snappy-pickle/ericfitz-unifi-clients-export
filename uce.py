@@ -11,8 +11,8 @@
 """
 UniFi Network Client Export Script (API Key Authentication)
 
-Exports all client devices (online and offline) from a UniFi Network controller
-to a CSV file using a read-only API key.
+Exports currently connected clients and all UniFi devices from a UniFi Network
+controller to a CSV file using a read-only API key.
 
 Compatible with UniFi Network Application v9.5.21+.
 
@@ -105,6 +105,7 @@ def main() -> None:
     devices_url = f"{CONTROLLER_URL}/proxy/network/api/s/{SITE_ID}/stat/device"
     print(f"\nFetching devices: {devices_url}")
     devices_map = {}
+    devices_data = []
     try:
         resp = session.get(devices_url, verify=VERIFY_SSL, timeout=15)
         if resp.status_code == 404:
@@ -174,9 +175,8 @@ def main() -> None:
                 "Switch": switch_name,
                 "Port": switch_port,
                 "Last Seen": last.strftime("%Y-%m-%d %H:%M:%S") if last else "",
-                "Status": "Online"
-                if c.get("is_wired") is False or c.get("ap_mac")
-                else "Offline",
+                # stat/sta only returns currently connected clients
+                "Status": "Online",
             }
         )
 
