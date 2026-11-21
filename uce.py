@@ -30,6 +30,7 @@ Date: November 15, 2025
 """
 
 import argparse
+import json
 import os
 import sys
 import requests
@@ -52,6 +53,51 @@ def add_timestamp(path, stamp):
     """Insert a timestamp before a file's extension: a.csv -> a_<stamp>.csv"""
     root, ext = os.path.splitext(path)
     return f"{root}_{stamp}{ext}"
+
+
+# Columns of the client CSV, in order. With --all-fields, every other field
+# the API returns is added after these.
+STANDARD_COLUMNS = [
+    "Type",
+    "Name",
+    "MAC Address",
+    "IP Address",
+    "Model",
+    "Connection Type",
+    "Switch",
+    "Port",
+    "Last Seen",
+    "Status",
+]
+
+# Secret API fields never written by --all-fields. The controller returns
+# device adoption and management credentials even to read-only API keys;
+# by convention their names start with "x_".
+SECRET_FIELDS = {"syslog_key", "guest_token"}
+
+
+def is_secret_field(key):
+    return key.startswith("x_") or key in SECRET_FIELDS
+
+
+def strip_secrets(value):
+    """Recursively remove secret fields from API data."""
+    if isinstance(value, dict):
+        return {
+            k: strip_secrets(v) for k, v in value.items() if not is_secret_field(k)
+        }
+    if isinstance(value, list):
+        return [strip_secrets(v) for v in value]
+    return value
+
+
+def add_api_fields(record, api_obj):
+    """Add every non-secret API field to a CSV record, without replacing
+    the standard columns. Nested values are written as JSON."""
+    for key, value in strip_secrets(api_obj).items():
+        if isinstance(value, (dict, list)):
+            value = json.dumps(value, sort_keys=True)
+        record.setdefault(key, value)
 
 
 def get_config():
@@ -115,6 +161,13 @@ def parse_args():
         action="store_true",
         help="add the run's date and time to output file names, "
         "e.g. unifi_clients_2025-11-20_154512.csv",
+    )
+    parser.add_argument(
+        "--all-fields",
+        action="store_true",
+        help="add every field the API returns for each client and device "
+        "after the standard columns (nested values as JSON; secret fields "
+        "such as device credentials are always left out)",
     )
     args = parser.parse_args()
     if args.history_hours <= 0:
@@ -300,6 +353,8 @@ def main() -> None:
                 "Status": "Online" if online else "Offline",
             }
         )
+        if args.all_fields:
+            add_api_fields(records[-1], c)
 
     # Process UniFi device data
     device_type_map = {
@@ -354,12 +409,20 @@ def main() -> None:
                 "Status": status,
             }
         )
+        if args.all_fields:
+            add_api_fields(records[-1], device)
 
     if not records:
         log("No clients or devices found.")
         return
 
-    df = pd.DataFrame(records)
+    if args.all_fields:
+        # object dtype keeps integers as integers when some rows lack a field
+        df = pd.DataFrame(records, dtype=object)
+        extra_columns = sorted(c for c in df.columns if c not in STANDARD_COLUMNS)
+        df = df[STANDARD_COLUMNS + extra_columns]
+    else:
+        df = pd.DataFrame(records)
     if to_stdout:
         df.to_csv(sys.stdout, index=False)
         sys.stdout.flush()

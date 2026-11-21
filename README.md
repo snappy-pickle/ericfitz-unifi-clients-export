@@ -153,6 +153,27 @@ uv run uce.py --include-offline --timestamp
 Switch port CSVs are written to the same directory as the client CSV (the
 current directory with `-o -`), and also get the timestamp with `--timestamp`.
 
+### Exporting every field
+
+The client CSV has a fixed set of columns. The controller returns many more
+fields for each client and device, such as the Wi-Fi network (`essid`), radio
+band, signal strength, manufacturer (`oui`) and first-seen time. To include all
+of them, add `--all-fields`:
+
+```bash
+uv run uce.py --all-fields
+```
+
+The standard columns come first, followed by every other field in alphabetical
+order, named as the API names them. Nested values (such as a device's port or
+radio tables) are written as JSON in a single cell. Times are left as Unix
+timestamps.
+
+Secret fields are always left out. Device records include adoption and
+management credentials (fields starting with `x_`, plus `syslog_key` and
+`guest_token`), even for read-only API keys, and these are never written to the
+CSV.
+
 The same options work when running with `python3 uce.py`.
 
 ### With python executable
