@@ -20,8 +20,8 @@ Compatible with UniFi Network Application v9.5.21+.
 Configuration:
   Copy example.env to .env and configure your UniFi controller settings.
 
-Run with: `uv run uce.py` (add `--include-offline` for offline clients;
-see `--help` for all options)
+Run with: `uv run uce.py` (add `--include-offline` for offline clients,
+`-o -` to write the client CSV to stdout; see `--help` for all options)
 
 Automatically installs dependencies via PEP 723 metadata when using `uv`.
 
@@ -40,6 +40,19 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+DEFAULT_OUTPUT = "unifi_clients.csv"
+
+
+def log(*args, **kwargs):
+    """Print progress and errors to stderr, so stdout can carry CSV data."""
+    print(*args, file=sys.stderr, **kwargs)
+
+
+def add_timestamp(path, stamp):
+    """Insert a timestamp before a file's extension: a.csv -> a_<stamp>.csv"""
+    root, ext = os.path.splitext(path)
+    return f"{root}_{stamp}{ext}"
+
 
 def get_config():
     """Load and validate configuration from environment variables."""
@@ -49,14 +62,14 @@ def get_config():
 
     # Check required values
     if not controller_url:
-        print("ERROR: CONTROLLER_URL is not set.")
-        print("   → Copy example.env to .env and configure your settings")
+        log("ERROR: CONTROLLER_URL is not set.")
+        log("   → Copy example.env to .env and configure your settings")
         sys.exit(1)
 
     if not api_key or api_key == "your-api-key-here":
-        print("ERROR: API_KEY is not set or using placeholder value.")
-        print("   → Get your API key from: Settings > Control Plane > Applications")
-        print("   → Update the API_KEY value in your .env file")
+        log("ERROR: API_KEY is not set or using placeholder value.")
+        log("   → Get your API key from: Settings > Control Plane > Applications")
+        log("   → Update the API_KEY value in your .env file")
         sys.exit(1)
 
     # Optional configuration with defaults
@@ -88,6 +101,21 @@ def parse_args():
         help="with --include-offline, how far back to include offline "
         "clients (default: 8760 = 1 year)",
     )
+    parser.add_argument(
+        "-o",
+        "--output",
+        default=DEFAULT_OUTPUT,
+        metavar="FILE",
+        help=f"where to write the client CSV; use '-' for stdout "
+        f"(default: {DEFAULT_OUTPUT}). Switch port CSVs are written to "
+        "the same directory, or the current directory with '-'",
+    )
+    parser.add_argument(
+        "--timestamp",
+        action="store_true",
+        help="add the run's date and time to output file names, "
+        "e.g. unifi_clients_2025-11-20_154512.csv",
+    )
     args = parser.parse_args()
     if args.history_hours <= 0:
         parser.error("--history-hours must be a positive integer")
@@ -96,6 +124,12 @@ def parse_args():
 
 def main() -> None:
     args = parse_args()
+    run_stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    to_stdout = args.output == "-"
+    output_path = args.output
+    if not to_stdout and args.timestamp:
+        output_path = add_timestamp(output_path, run_stamp)
+    output_dir = "" if to_stdout else os.path.dirname(output_path)
 
     # Load configuration
     CONTROLLER_URL, API_KEY, SITE_ID, VERIFY_SSL = get_config()
@@ -110,36 +144,36 @@ def main() -> None:
 
     # Test sites endpoint
     sites_url = f"{CONTROLLER_URL}/proxy/network/api/self/sites"
-    print(f"Testing: {sites_url}")
+    log(f"Testing: {sites_url}")
     try:
         resp = session.get(sites_url, verify=VERIFY_SSL, timeout=15)
-        print(f"HTTP {resp.status_code}")
+        log(f"HTTP {resp.status_code}")
         if resp.status_code == 401:
-            print("   → 401 Unauthorized: Invalid API key.")
+            log("   → 401 Unauthorized: Invalid API key.")
             return
         if resp.status_code == 404:
-            print("   → 404: Trying fallback endpoint...")
+            log("   → 404: Trying fallback endpoint...")
             sites_url = f"{CONTROLLER_URL}/api/self/sites"
             resp = session.get(sites_url, verify=VERIFY_SSL, timeout=15)
-            print(f"Fallback HTTP {resp.status_code}")
+            log(f"Fallback HTTP {resp.status_code}")
         if resp.status_code != 200:
-            print(f"   → Failed: {resp.status_code}. Raw: {resp.text[:500]}")
+            log(f"   → Failed: {resp.status_code}. Raw: {resp.text[:500]}")
             return
         sites = resp.json().get("data", [])
-        print(f"Found {len(sites)} site(s): {[s.get('desc') for s in sites]}")
+        log(f"Found {len(sites)} site(s): {[s.get('desc') for s in sites]}")
     except Exception as e:
-        print(f"Connection error: {e}")
+        log(f"Connection error: {e}")
         return
 
     # Fetch devices (switches, APs, etc.) for name mapping
     devices_url = f"{CONTROLLER_URL}/proxy/network/api/s/{SITE_ID}/stat/device"
-    print(f"\nFetching devices: {devices_url}")
+    log(f"\nFetching devices: {devices_url}")
     devices_map = {}
     devices_data = []
     try:
         resp = session.get(devices_url, verify=VERIFY_SSL, timeout=15)
         if resp.status_code == 404:
-            print("   → 404: Trying fallback...")
+            log("   → 404: Trying fallback...")
             devices_url = f"{CONTROLLER_URL}/api/s/{SITE_ID}/stat/device"
             resp = session.get(devices_url, verify=VERIFY_SSL, timeout=15)
         resp.raise_for_status()
@@ -149,30 +183,30 @@ def main() -> None:
             mac = device.get("mac", "").upper()
             name = device.get("name") or device.get("hostname") or mac
             devices_map[mac] = name
-        print(f"Found {len(devices_map)} device(s)")
+        log(f"Found {len(devices_map)} device(s)")
     except Exception as e:
-        print(f"Warning: Could not fetch devices: {e}")
-        print("   → Switch names will show as MAC addresses")
+        log(f"Warning: Could not fetch devices: {e}")
+        log("   → Switch names will show as MAC addresses")
 
     # Fetch clients
     clients_url = f"{CONTROLLER_URL}/proxy/network/api/s/{SITE_ID}/stat/sta"
-    print(f"\nFetching clients: {clients_url}")
+    log(f"\nFetching clients: {clients_url}")
     try:
         resp = session.get(clients_url, verify=VERIFY_SSL, timeout=15)
         if resp.status_code == 404:
-            print("   → 404: Trying fallback...")
+            log("   → 404: Trying fallback...")
             clients_url = f"{CONTROLLER_URL}/api/s/{SITE_ID}/stat/sta"
             resp = session.get(clients_url, verify=VERIFY_SSL, timeout=15)
         resp.raise_for_status()
         clients_data = resp.json().get("data", [])
     except requests.exceptions.HTTPError as e:
-        print(f"HTTP error: {e}")
-        print(f"Response: {e.response.text[:500]}")
+        log(f"HTTP error: {e}")
+        log(f"Response: {e.response.text[:500]}")
         return
     except Exception as e:
-        print(f"Failed: {e}")
+        log(f"Failed: {e}")
         return
-    print(f"Found {len(clients_data)} connected client(s)")
+    log(f"Found {len(clients_data)} connected client(s)")
 
     # stat/sta only returns connected clients; the client history also
     # includes clients that are offline.
@@ -187,25 +221,25 @@ def main() -> None:
         ]
         for path, params in history_paths:
             history_url = f"{CONTROLLER_URL}/proxy/network/api/s/{SITE_ID}/{path}"
-            print(f"\nFetching client history: {history_url}")
+            log(f"\nFetching client history: {history_url}")
             try:
                 resp = session.get(
                     history_url, params=params, verify=VERIFY_SSL, timeout=30
                 )
                 if resp.status_code == 404:
-                    print("   → 404: Trying fallback...")
+                    log("   → 404: Trying fallback...")
                     history_url = f"{CONTROLLER_URL}/api/s/{SITE_ID}/{path}"
                     resp = session.get(
                         history_url, params=params, verify=VERIFY_SSL, timeout=30
                     )
                 resp.raise_for_status()
                 history_data = resp.json().get("data", [])
-                print(f"Found {len(history_data)} known client(s)")
+                log(f"Found {len(history_data)} known client(s)")
                 break
             except Exception as e:
-                print(f"Warning: Could not fetch client history: {e}")
+                log(f"Warning: Could not fetch client history: {e}")
         if not history_data:
-            print("   → Only currently connected clients will be exported")
+            log("   → Only currently connected clients will be exported")
 
     # Merge: connected clients (with live details) take precedence over
     # history entries for the same MAC address
@@ -322,21 +356,26 @@ def main() -> None:
         )
 
     if not records:
-        print("No clients or devices found.")
+        log("No clients or devices found.")
         return
 
     df = pd.DataFrame(records)
-    df.to_csv("unifi_clients.csv", index=False)
+    if to_stdout:
+        df.to_csv(sys.stdout, index=False)
+        sys.stdout.flush()
+    else:
+        df.to_csv(output_path, index=False)
 
     # Count clients and devices
     client_count = sum(1 for r in records if r["Type"] == "Client")
     device_count = len(records) - client_count
-    print(f"\nSuccess: {len(records)} total entries → unifi_clients.csv")
-    print(f"   → {client_count} clients")
-    print(f"   → {device_count} UniFi devices")
+    destination = "stdout" if to_stdout else output_path
+    log(f"\nSuccess: {len(records)} total entries → {destination}")
+    log(f"   → {client_count} clients")
+    log(f"   → {device_count} UniFi devices")
 
     # Generate per-switch port information CSV files
-    print("\nGenerating switch port CSV files...")
+    log("\nGenerating switch port CSV files...")
     switches_processed = 0
     for device in devices_data:
         # Only process switches (usw = UniFi Switch)
@@ -409,13 +448,15 @@ def main() -> None:
         if port_records:
             # Sanitize filename
             safe_name = "".join(c if c.isalnum() or c in (" ", "-", "_") else "_" for c in device_name)
-            filename = f"switch_{safe_name}.csv"
+            filename = os.path.join(output_dir, f"switch_{safe_name}.csv")
+            if args.timestamp:
+                filename = add_timestamp(filename, run_stamp)
             port_df = pd.DataFrame(port_records)
             port_df.to_csv(filename, index=False)
             switches_processed += 1
-            print(f"   → {filename} ({len(port_records)} ports)")
+            log(f"   → {filename} ({len(port_records)} ports)")
 
-    print(f"\nGenerated {switches_processed} switch port CSV files")
+    log(f"\nGenerated {switches_processed} switch port CSV files")
 
 
 if __name__ == "__main__":

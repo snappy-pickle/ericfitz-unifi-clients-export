@@ -127,6 +127,32 @@ included. Use `--history-hours` to change that:
 uv run uce.py --include-offline --history-hours 720   # last 30 days
 ```
 
+### Choosing where the output goes
+
+By default the client CSV is written to `unifi_clients.csv` in the current
+directory. To choose a different file, use `-o`:
+
+```bash
+uv run uce.py -o before-wifi-change.csv
+```
+
+To write the client CSV to stdout instead, use `-o -`. Progress messages go to
+stderr, so they don't end up in the CSV:
+
+```bash
+uv run uce.py --include-offline -o - > snapshot.csv
+```
+
+To keep a series of snapshots, add `--timestamp`, which puts the run's date and
+time in the file names (for example `unifi_clients_2025-11-20_154512.csv`):
+
+```bash
+uv run uce.py --include-offline --timestamp
+```
+
+Switch port CSVs are written to the same directory as the client CSV (the
+current directory with `-o -`), and also get the timestamp with `--timestamp`.
+
 The same options work when running with `python3 uce.py`.
 
 ### With python executable
